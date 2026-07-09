@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../features/setup/models/janus_config.dart';
 import '../providers/live_stream_provider.dart';
 import '../widgets/control_bar.dart';
 import '../widgets/stream_button.dart';
 import '../widgets/view_finder.dart';
 
 class LiveStreamScreen extends ConsumerStatefulWidget {
-  const LiveStreamScreen({super.key});
+  final JanusConfig? config;
+  const LiveStreamScreen({super.key, this.config});
 
   @override
   ConsumerState<LiveStreamScreen> createState() => _LiveStreamScreenState();
@@ -100,6 +102,7 @@ class _LiveStreamScreenState extends ConsumerState<LiveStreamScreen> {
                     isMicMuted: state.isMicMuted,
                     isVideoMuted: state.isVideoMuted,
                     isTorchOn: state.isTorchOn,
+                    isTorchSupported: state.isTorchSupported,
                     onMicTap: notifier.toggleMic,
                     onVideoTap: notifier.toggleVideo,
                     onFlipTap: notifier.flipCamera,
