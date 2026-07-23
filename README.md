@@ -16,12 +16,9 @@ A Flutter-based live streaming camera application with real-time controls includ
 
 ---
 
-## Getting Started
-
-### 1. Clone the repository
+### 1. Navigate to project directory
 
 ```bash
-git clone <repository-url>
 cd live_stream_app
 ```
 
@@ -72,35 +69,4 @@ Grant these when prompted on first launch.
 
 ---
 
-## Project Structure
 
-```
-lib/
-├── core/
-│   └── theme/          # App theming
-├── features/
-│   └── live_stream/
-│       └── screens/    # Live stream UI screens
-└── main.dart           # App entry point
-```
-
----
-
-## Dependencies
-
-| Package | Purpose |
-|---------|---------|
-| `flutter_riverpod` | State management |
-| `camera` | Camera access and control |
-| `torch_light` | Torch/flashlight control |
-| `permission_handler` | Runtime permission handling |
-
----
-
-## Building for Release
-
-```bash
-flutter build apk --release
-```
-
-The output APK will be located at `build/app/outputs/flutter-apk/app-release.apk`.

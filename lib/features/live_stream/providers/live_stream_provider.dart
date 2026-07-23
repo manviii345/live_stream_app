@@ -1,306 +1,256 @@
-import 'package:camera/camera.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
-// State
 
-/// Immutable state for the live stream screen.
+import '../../../models/stream_config.dart';
+import '../../../services/janus_service.dart';
+
+enum StreamingPhase { idle, connected, streaming }
+
 class LiveStreamState {
-  final bool isLive;
+  final StreamingPhase phase;
   final bool isMicMuted;
   final bool isVideoMuted;
-
-  /// Whether the user *wants* the torch ON. Survives camera flips.
   final bool isTorchOn;
-
-  /// Whether the current camera physically has a flash unit.
-  /// False while no camera is bound, or when the active lens has no flash.
   final bool isTorchSupported;
-
   final bool isFrontCamera;
-  final bool isInitialized;
+  final bool permissionsGranted;
   final String? errorMessage;
-  final CameraController? controller;
 
   const LiveStreamState({
-    this.isLive = false,
+    this.phase = StreamingPhase.idle,
     this.isMicMuted = false,
     this.isVideoMuted = false,
     this.isTorchOn = false,
     this.isTorchSupported = false,
     this.isFrontCamera = false,
-    this.isInitialized = false,
+    this.permissionsGranted = false,
     this.errorMessage,
-    this.controller,
   });
 
+  bool get isConnected => phase == StreamingPhase.connected;
+  bool get isStreaming => phase == StreamingPhase.streaming;
+
   LiveStreamState copyWith({
-    bool? isLive,
+    StreamingPhase? phase,
     bool? isMicMuted,
     bool? isVideoMuted,
     bool? isTorchOn,
     bool? isTorchSupported,
     bool? isFrontCamera,
-    bool? isInitialized,
+    bool? permissionsGranted,
     String? errorMessage,
-    CameraController? controller,
+    bool clearError = false,
   }) {
     return LiveStreamState(
-      isLive: isLive ?? this.isLive,
+      phase: phase ?? this.phase,
       isMicMuted: isMicMuted ?? this.isMicMuted,
       isVideoMuted: isVideoMuted ?? this.isVideoMuted,
       isTorchOn: isTorchOn ?? this.isTorchOn,
       isTorchSupported: isTorchSupported ?? this.isTorchSupported,
       isFrontCamera: isFrontCamera ?? this.isFrontCamera,
-      isInitialized: isInitialized ?? this.isInitialized,
-      errorMessage: errorMessage,
-      controller: controller ?? this.controller,
+      permissionsGranted: permissionsGranted ?? this.permissionsGranted,
+      errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
     );
   }
 }
-// Notifier
 
-/// Notifier handling all hardware interactions: camera, mic, torch.
-///
-/// ## Torch design
-/// The `torch_light` package is intentionally NOT used. It opens a second
-/// independent camera session, which conflicts with the CameraX session that
-/// the `camera` Flutter plugin already holds.  Using two sessions in parallel
-/// triggers "Camera in use" / `ERROR_CAMERA_IN_USE` on Android.
-///
-/// Instead we use [CameraController.setFlashMode] exclusively — this drives the
-/// flash on the *already-bound* CameraX Camera object, satisfying:
-///   • No second camera instance.
-///   • Works for both lenses (back = hardware LED; front = screen-flash if
-///     the OEM supports [FlashMode.torch] on the front sensor).
-///   • `isTorchOn` is a *user preference* that survives flips; the actual
-///     hardware is (re-)applied after the new controller is fully initialised.
 class LiveStreamNotifier extends StateNotifier<LiveStreamState> {
-  LiveStreamNotifier() : super(const LiveStreamState());
+  final Ref _ref;
+  late final JanusService _janus;
 
-  List<CameraDescription> _cameras = [];
-  // Initialization
+  RTCVideoRenderer? _renderer;
+  RTCVideoRenderer? get renderer => _renderer;
 
-  /// Request permissions, discover cameras, bind the first (back) camera.
-  Future<void> initializeCamera() async {
+  LiveStreamNotifier(this._ref) : super(const LiveStreamState()) {
+    _janus = _ref.read(janusServiceProvider);
+
+    state = state.copyWith(phase: _phaseFrom(_janus.phase));
+
+    _janus.onPhaseChange = (p) {
+      if (!mounted) return;
+      state = state.copyWith(phase: _phaseFrom(p));
+    };
+
+    _janus.onError = (msg) {
+      if (mounted) state = state.copyWith(errorMessage: msg);
+    };
+  }
+
+  static StreamingPhase _phaseFrom(JanusPhase p) {
+    switch (p) {
+      case JanusPhase.publishing:
+        return StreamingPhase.streaming;
+      case JanusPhase.joined:
+        return StreamingPhase.connected;
+      default:
+        return StreamingPhase.idle;
+    }
+  }
+
+  Future<void> requestPermissions() async {
     try {
-      final statuses = await [
-        Permission.camera,
-        Permission.microphone,
-      ].request();
+      final statuses = await [Permission.camera, Permission.microphone].request();
+      final granted =
+          (statuses[Permission.camera]?.isGranted ?? false) &&
+          (statuses[Permission.microphone]?.isGranted ?? false);
 
-      final cameraGranted = statuses[Permission.camera]?.isGranted ?? false;
-      final micGranted = statuses[Permission.microphone]?.isGranted ?? false;
-
-      if (!cameraGranted || !micGranted) {
+      if (!granted) {
         state = state.copyWith(
           errorMessage: 'Camera and microphone permissions are required.',
         );
         return;
       }
 
-      _cameras = await availableCameras();
-      if (_cameras.isEmpty) {
-        state = state.copyWith(errorMessage: 'No camera found on this device.');
-        return;
+      state = state.copyWith(permissionsGranted: true, clearError: true);
+    } catch (e) {
+      state = state.copyWith(errorMessage: 'Permission request failed: $e');
+    }
+  }
+
+  Future<void> startStreaming() async {
+    if (!state.isConnected) return;
+
+    try {
+      await _janus.startPublishing(state.isFrontCamera);
+
+      _renderer = RTCVideoRenderer();
+      await _renderer!.initialize();
+      _renderer!.srcObject = _janus.localStream;
+
+      final stream = _janus.localStream;
+      if (stream != null) {
+        final videoTracks = stream.getVideoTracks();
+        if (videoTracks.isNotEmpty) {
+          final track = videoTracks.first;
+          final hasTorch = await track.hasTorch();
+          state = state.copyWith(isTorchSupported: hasTorch);
+          if (state.isTorchOn && hasTorch) {
+            await track.setTorch(true);
+          }
+        }
       }
 
-      await _startController(_cameras.first);
+      if (state.isMicMuted) {
+        _setAudioEnabled(false);
+      }
+      if (state.isVideoMuted) {
+        _setVideoEnabled(false);
+      }
+    } catch (_) {
+      await _disposeRenderer();
+    }
+  }
+
+  Future<void> stopStreaming() async {
+    if (!state.isStreaming) return;
+    await _janus.stopPublishing();
+    await _disposeRenderer();
+  }
+
+  Future<void> flipCamera() async {
+    final newIsFront = !state.isFrontCamera;
+    state = state.copyWith(isFrontCamera: newIsFront);
+
+    if (!state.isStreaming) return;
+
+    try {
+      final stream = _janus.localStream;
+      if (stream != null) {
+        final videoTracks = stream.getVideoTracks();
+        if (videoTracks.isNotEmpty) {
+          final track = videoTracks.first;
+          await Helper.switchCamera(track);
+
+          final hasTorch = await track.hasTorch();
+          state = state.copyWith(isTorchSupported: hasTorch);
+
+          if (state.isTorchOn) {
+            if (hasTorch) {
+              await track.setTorch(true);
+            }
+          }
+        }
+      }
     } catch (e) {
-      state = state.copyWith(errorMessage: 'Camera init failed: $e');
-    }
-  }
-  // Internal helpers
-
-  /// Creates, initialises and binds a new [CameraController].
-  ///
-  /// Steps (order matters for correctness):
-  ///  1. Gracefully turn off flash on the *outgoing* controller before dispose
-  ///     so the hardware LED is left in a clean state.
-  ///  2. Dispose the old controller — releases the CameraX session.
-  ///  3. Create + initialise the new controller — opens a fresh CameraX session.
-  ///  4. Probe flash support via a silent try/catch.
-  ///  5. If the user preference `isTorchOn` is true AND the new lens supports
-  ///     flash, re-enable it on the new session.
-  ///
-  /// Doing step 5 *after* initialisation avoids any race condition: the camera
-  /// is fully bound before we touch the flash.
-  Future<void> _startController(CameraDescription description) async {
-    // ── 1. Turn off flash on the outgoing camera before releasing it.
-    final outgoing = state.controller;
-    if (outgoing != null && outgoing.value.isInitialized) {
-      await _setFlashOff(outgoing);
-    }
-
-    // ── 2. Release the old CameraX session.
-    await outgoing?.dispose();
-
-    // ── 3. Bind a new CameraX session.
-    final controller = CameraController(
-      description,
-      ResolutionPreset.high,
-      enableAudio: !state.isMicMuted,
-      // imageFormatGroup omitted — default is fine for preview + streaming.
-    );
-
-    await controller.initialize();
-
-    // ── 4. Probe whether this lens has a flash unit.
-    //      We attempt a no-op setFlashMode; a CameraException means no flash.
-    final supported = await _probeFlashSupport(controller);
-
-    // Publish the new controller and flash-support flag immediately so the UI
-    // stops showing a spinner.
-    state = state.copyWith(
-      controller: controller,
-      isInitialized: true,
-      isTorchSupported: supported,
-      errorMessage: null,
-    );
-
-    // ── 5. Reapply user's torch preference on the newly bound camera.
-    //      This is the key fix: torch state survives camera flips.
-    if (state.isTorchOn && supported) {
-      await _setFlashMode(controller, FlashMode.torch);
+      state = state.copyWith(errorMessage: 'Camera flip failed: $e');
     }
   }
 
-  /// Silently probes whether [controller]'s camera has a flash unit by
-  /// attempting to set [FlashMode.torch] then restoring [FlashMode.off].
-  ///
-  /// Returns `true` if the camera supports torch mode.
-  Future<bool> _probeFlashSupport(CameraController controller) async {
-    try {
-      await controller.setFlashMode(FlashMode.torch);
-      // If we got here it's supported — restore to off immediately.
-      await controller.setFlashMode(FlashMode.off);
-      return true;
-    } on CameraException {
-      return false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Sets flash mode on [controller], silently ignoring any [CameraException].
-  Future<void> _setFlashMode(
-      CameraController controller, FlashMode mode) async {
-    try {
-      await controller.setFlashMode(mode);
-    } on CameraException {
-      // Camera doesn't support this flash mode — fail gracefully.
-    } catch (_) {
-      // Any other low-level error — ignore.
-    }
-  }
-
-  /// Convenience wrapper to turn flash off silently.
-  Future<void> _setFlashOff(CameraController controller) =>
-      _setFlashMode(controller, FlashMode.off);
-
-  void toggleStreaming() {
-    if (!state.isInitialized) return;
-    state = state.copyWith(isLive: !state.isLive);
-  }
-
-  /// Mute/unmute microphone.
-  /// Re-creates the controller because [enableAudio] can't be toggled live on
-  /// most platforms.  [_startController] will preserve torch state.
   Future<void> toggleMic() async {
     final newMuted = !state.isMicMuted;
     state = state.copyWith(isMicMuted: newMuted);
-    if (state.controller != null) {
-      await _startController(state.controller!.description);
-    }
+    if (state.isStreaming) _setAudioEnabled(!newMuted);
   }
 
-  /// Mute/unmute the camera preview.
   Future<void> toggleVideo() async {
-    final controller = state.controller;
-    if (controller == null) return;
-
     final newMuted = !state.isVideoMuted;
     state = state.copyWith(isVideoMuted: newMuted);
-
-    if (newMuted) {
-      await controller.pausePreview();
-    } else {
-      await controller.resumePreview();
-    }
+    if (state.isStreaming) _setVideoEnabled(!newMuted);
   }
 
-  /// Flip between front and back camera while preserving the user's torch
-  /// preference (`isTorchOn`).
-  ///
-  /// Flow:
-  ///  • [_startController] turns off the outgoing flash (step 1) before
-  ///    dispose, then re-enables it on the incoming camera (step 5) if
-  ///    supported.  No extra logic is needed here.
-  Future<void> flipCamera() async {
-    if (_cameras.length < 2) return;
-
-    final newIsFront = !state.isFrontCamera;
-    final newDescription = _cameras.firstWhere(
-      (c) => newIsFront
-          ? c.lensDirection == CameraLensDirection.front
-          : c.lensDirection == CameraLensDirection.back,
-      orElse: () => _cameras.first,
-    );
-
-    // Update lens-direction flag before _startController so that the UI
-    // reflects the correct camera immediately.
-    state = state.copyWith(isFrontCamera: newIsFront);
-
-    // _startController handles:
-    //   • turning off outgoing torch (step 1)
-    //   • probing new camera's flash support (step 4)
-    //   • re-enabling torch if user had it on AND new lens supports it (step 5)
-    await _startController(newDescription);
-  }
-
-  /// Toggle torch on/off.
-  ///
-  /// Updates [isTorchOn] (user preference) and drives the hardware.
-  /// If the current camera doesn't support flash, the toggle is a no-op but
-  /// the preference is still stored — so if the user later flips to a lens
-  /// that *does* have flash it will be auto-enabled.
   Future<void> toggleTorch() async {
-    final controller = state.controller;
-    if (controller == null || !controller.value.isInitialized) return;
+    if (!state.isStreaming) return;
+    final stream = _janus.localStream;
+    if (stream == null) return;
+    final videoTracks = stream.getVideoTracks();
+    if (videoTracks.isEmpty) return;
+    final track = videoTracks.first;
 
-    final newOn = !state.isTorchOn;
+    final newTorchState = !state.isTorchOn;
+    state = state.copyWith(isTorchOn: newTorchState);
 
-    // Persist the user's intention regardless of hardware support.
-    state = state.copyWith(isTorchOn: newOn);
-
-    // Drive the hardware only if the current camera supports it.
-    if (state.isTorchSupported) {
-      await _setFlashMode(
-        controller,
-        newOn ? FlashMode.torch : FlashMode.off,
-      );
+    final canTorch = await track.hasTorch();
+    if (canTorch) {
+      await track.setTorch(newTorchState);
     }
   }
 
-  /// Disconnect: turn off flash, release camera, reset state.
+  Future<void> applyStreamConfig(StreamConfig newConfig) async {
+    await _janus.applyStreamConfig(newConfig);
+  }
+
   Future<void> disconnect() async {
-    final controller = state.controller;
-    if (controller != null && controller.value.isInitialized) {
-      await _setFlashOff(controller);
+    await _janus.dispose();
+    await _disposeRenderer();
+    state = state.copyWith(phase: StreamingPhase.idle, clearError: true);
+  }
+
+  void markConnected() {
+    state = state.copyWith(phase: StreamingPhase.connected, clearError: true);
+  }
+
+  void _setAudioEnabled(bool enabled) {
+    final stream = _janus.localStream;
+    if (stream == null) return;
+    for (final track in stream.getAudioTracks()) {
+      track.enabled = enabled;
     }
-    await controller?.dispose();
-    state = const LiveStreamState();
+  }
+
+  void _setVideoEnabled(bool enabled) {
+    final stream = _janus.localStream;
+    if (stream == null) return;
+    for (final track in stream.getVideoTracks()) {
+      track.enabled = enabled;
+    }
+  }
+
+  Future<void> _disposeRenderer() async {
+    await _renderer?.dispose();
+    _renderer = null;
   }
 
   @override
   void dispose() {
-    // Dispose without awaiting — this is called synchronously by the framework.
-    state.controller?.dispose();
+    _janus.onPhaseChange = null;
+    _janus.onError = null;
+    _renderer?.dispose();
     super.dispose();
   }
 }
-// Provider
 
 final liveStreamProvider =
     StateNotifierProvider<LiveStreamNotifier, LiveStreamState>(
-  (ref) => LiveStreamNotifier(),
+  (ref) => LiveStreamNotifier(ref),
 );

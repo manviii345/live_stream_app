@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../../core/theme/app_theme.dart';
-import '../models/janus_config.dart';
+import '../../../models/janus_config.dart';
 
 /// Full-screen QR code scanner shown as a modal bottom sheet.
 /// Pops with a [JanusConfig] on a successful scan, or null if cancelled.
@@ -47,7 +47,7 @@ class _QrScannerSheetState extends State<QrScannerSheet> {
       minChildSize: 0.6,
       builder: (ctx, scrollController) => Container(
         decoration: const BoxDecoration(
-          color: AppColors.textDark,
+          color: Color(0xFF1A1A2E),
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
         child: Column(
@@ -123,7 +123,7 @@ class _QrScannerSheetState extends State<QrScannerSheet> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 16, vertical: 12),
                         decoration: BoxDecoration(
-                          color: AppColors.liveRed.withOpacity(0.9),
+                          color: AppColors.liveRed.withValues(alpha: 0.9),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Row(
@@ -159,7 +159,7 @@ class _QrScannerSheetState extends State<QrScannerSheet> {
                       'Point your camera at the Janus QR code',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.7),
+                        color: Colors.white.withValues(alpha: 0.7),
                         fontSize: 13,
                       ),
                     ),
@@ -177,7 +177,7 @@ class _QrScannerSheetState extends State<QrScannerSheet> {
   List<Widget> _corners() {
     const len = 22.0;
     const thick = 3.0;
-    final c = AppColors.orange;
+    const c = AppColors.orange;
     return [
       // Top-left
       Positioned(

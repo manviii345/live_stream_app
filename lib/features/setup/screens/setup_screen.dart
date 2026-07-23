@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
-import '../models/janus_config.dart';
-import '../providers/setup_provider.dart';
+import '../../../models/janus_config.dart';
+import '../../../providers/app_state_provider.dart';
+import '../../../providers/theme_provider.dart';
 import '../../live_stream/screens/live_stream_screen.dart';
+import '../../../services/janus_service.dart';
 import 'qr_scanner_sheet.dart';
 
 class SetupScreen extends ConsumerStatefulWidget {
@@ -22,7 +24,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
   @override
   void initState() {
     super.initState();
-    final s = ref.read(setupProvider);
+    final s = ref.read(appStateProvider);
     _serverCtrl = TextEditingController(text: s.serverUrl);
     _roomCtrl = TextEditingController(text: s.roomId);
     _pinCtrl = TextEditingController(text: s.pin);
@@ -38,8 +40,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
     super.dispose();
   }
 
-  // Sync external state changes (e.g. from QR scan) into text controllers.
-  void _syncControllers(SetupState s) {
+  void _syncControllers(AppState s) {
     if (_serverCtrl.text != s.serverUrl) {
       _serverCtrl.text = s.serverUrl;
       _serverCtrl.selection =
@@ -69,17 +70,27 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
       builder: (_) => const QrScannerSheet(),
     );
     if (result != null && mounted) {
-      ref.read(setupProvider.notifier).applyConfig(result);
+      ref.read(appStateProvider.notifier).applyJanusConfig(result);
     }
   }
 
   Future<void> _connect() async {
     FocusScope.of(context).unfocus();
-    final config = await ref.read(setupProvider.notifier).connect();
-    if (config != null && mounted) {
+    final notifier = ref.read(appStateProvider.notifier);
+
+    final config = await notifier.connect();
+    if (config == null || !mounted) return;
+
+    try {
+      final streamConfig = ref.read(appStateProvider).streamConfig;
+      await ref.read(janusServiceProvider).joinRoom(config, streamConfig);
+
+      if (!mounted) return;
+      notifier.clearConnecting();
+
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
-          pageBuilder: (_, animation, __) => LiveStreamScreen(config: config),
+          pageBuilder: (_, animation, __) => const LiveStreamScreen(),
           transitionsBuilder: (_, animation, __, child) => FadeTransition(
             opacity: animation,
             child: child,
@@ -87,19 +98,20 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
           transitionDuration: const Duration(milliseconds: 400),
         ),
       );
+    } catch (e) {
+      if (mounted) notifier.setError(e.toString());
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(setupProvider);
-    final notifier = ref.read(setupProvider.notifier);
+    final state = ref.watch(appStateProvider);
+    final notifier = ref.read(appStateProvider.notifier);
 
-    // Keep text controllers in sync when QR populates fields.
     _syncControllers(state);
 
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: AppColors.background(context),
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
@@ -110,20 +122,16 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // ── Header ────────────────────────────────────────────────
-                  _Header(),
+                  const _Header(),
                   const SizedBox(height: 32),
 
-                  // ── QR Section ────────────────────────────────────────────
                   _QrSection(onTap: _openQrScanner),
                   const SizedBox(height: 24),
 
-                  // ── OR divider ────────────────────────────────────────────
-                  _OrDivider(),
+                  const _OrDivider(),
                   const SizedBox(height: 24),
 
-                  // ── Server URL ────────────────────────────────────────────
-                  _FieldLabel('Janus Server URL'),
+                  const _FieldLabel('Janus Server URL'),
                   const SizedBox(height: 8),
                   _InputField(
                     controller: _serverCtrl,
@@ -133,14 +141,13 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // ── Room + Pin ─────────────────────────────────────────────
                   Row(
                     children: [
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _FieldLabel('Room'),
+                            const _FieldLabel('Room'),
                             const SizedBox(height: 8),
                             _InputField(
                               controller: _roomCtrl,
@@ -156,7 +163,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _FieldLabel('Pin'),
+                            const _FieldLabel('Pin'),
                             const SizedBox(height: 8),
                             _InputField(
                               controller: _pinCtrl,
@@ -171,8 +178,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // ── Display Name ──────────────────────────────────────────
-                  _FieldLabel('Display Name'),
+                  const _FieldLabel('Display Name'),
                   const SizedBox(height: 8),
                   _InputField(
                     controller: _nameCtrl,
@@ -181,14 +187,12 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                   ),
                   const SizedBox(height: 20),
 
-                  // ── Save as default ────────────────────────────────────────
                   _SaveCheckbox(
                     value: state.saveAsDefault,
                     onChanged: notifier.setSaveAsDefault,
                   ),
                   const SizedBox(height: 8),
 
-                  // ── Error message ──────────────────────────────────────────
                   if (state.errorMessage != null) ...[
                     const SizedBox(height: 4),
                     _ErrorBanner(message: state.errorMessage!),
@@ -196,7 +200,6 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                   ],
                   const SizedBox(height: 20),
 
-                  // ── Connect button ────────────────────────────────────────
                   _ConnectButton(
                     isLoading: state.isConnecting,
                     onTap: state.isConnecting ? null : _connect,
@@ -212,14 +215,16 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
   }
 }
 
-// ─── Sub-widgets ──────────────────────────────────────────────────────────────
+class _Header extends ConsumerWidget {
+  const _Header();
 
-class _Header extends StatelessWidget {
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final themeMode = ref.watch(themeModeProvider);
+    final isDark = themeMode == ThemeMode.dark;
+
     return Row(
       children: [
-        // App logo square
         Container(
           width: 44,
           height: 44,
@@ -238,14 +243,23 @@ class _Header extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 14),
-        const Text(
+        Text(
           'App Title',
           style: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w700,
-            color: AppColors.textDark,
+            color: AppColors.textDark(context),
             letterSpacing: -0.3,
           ),
+        ),
+        const Spacer(),
+        IconButton(
+          icon: Icon(
+            isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
+            color: AppColors.textDark(context),
+          ),
+          tooltip: isDark ? 'Switch to Light Theme' : 'Switch to Dark Theme',
+          onPressed: () => ref.read(themeModeProvider.notifier).toggleTheme(),
         ),
       ],
     );
@@ -262,14 +276,14 @@ class _QrSection extends StatelessWidget {
       children: [
         GestureDetector(
           onTap: onTap,
-          child: Text(
+          child: const Text(
             'Scan QR Code',
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w500,
-              color: const Color(0xFF3B6FF5),
+              color: Color(0xFF3B6FF5),
               decoration: TextDecoration.underline,
-              decorationColor: const Color(0xFF3B6FF5),
+              decorationColor: Color(0xFF3B6FF5),
             ),
           ),
         ),
@@ -280,12 +294,12 @@ class _QrSection extends StatelessWidget {
             width: double.infinity,
             height: 140,
             decoration: BoxDecoration(
-              color: AppColors.cardWhite,
+              color: AppColors.cardWhite(context),
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: AppColors.border),
+              border: Border.all(color: AppColors.border(context)),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.04),
+                  color: Colors.black.withValues(alpha: 0.04),
                   blurRadius: 10,
                   offset: const Offset(0, 3),
                 ),
@@ -294,18 +308,17 @@ class _QrSection extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // QR icon
                 Container(
                   width: 72,
                   height: 72,
                   decoration: BoxDecoration(
-                    color: AppColors.background,
+                    color: AppColors.background(context),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Icon(
+                  child: Icon(
                     Icons.qr_code_2_rounded,
                     size: 44,
-                    color: AppColors.textDark,
+                    color: AppColors.textDark(context),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -313,7 +326,7 @@ class _QrSection extends StatelessWidget {
                   'Tap to scan',
                   style: TextStyle(
                     fontSize: 12,
-                    color: AppColors.textGrey,
+                    color: AppColors.textGrey(context),
                   ),
                 ),
               ],
@@ -326,13 +339,15 @@ class _QrSection extends StatelessWidget {
 }
 
 class _OrDivider extends StatelessWidget {
+  const _OrDivider();
+
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
         Expanded(
           child: Divider(
-            color: AppColors.border,
+            color: AppColors.border(context),
             thickness: 1,
           ),
         ),
@@ -343,14 +358,14 @@ class _OrDivider extends StatelessWidget {
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w500,
-              color: AppColors.textGrey,
+              color: AppColors.textGrey(context),
               letterSpacing: 1.4,
             ),
           ),
         ),
         Expanded(
           child: Divider(
-            color: AppColors.border,
+            color: AppColors.border(context),
             thickness: 1,
           ),
         ),
@@ -367,10 +382,10 @@ class _FieldLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: const TextStyle(
+      style: TextStyle(
         fontSize: 13,
         fontWeight: FontWeight.w500,
-        color: AppColors.textDark,
+        color: AppColors.textDark(context),
       ),
     );
   }
@@ -398,27 +413,27 @@ class _InputField extends StatelessWidget {
       obscureText: obscure,
       keyboardType: keyboardType,
       onChanged: onChanged,
-      style: const TextStyle(
+      style: TextStyle(
         fontSize: 14,
-        color: AppColors.textDark,
+        color: AppColors.textDark(context),
       ),
       decoration: InputDecoration(
         hintText: hint,
-        hintStyle: const TextStyle(
+        hintStyle: TextStyle(
           fontSize: 14,
-          color: AppColors.textGrey,
+          color: AppColors.textGrey(context),
         ),
         filled: true,
-        fillColor: AppColors.cardWhite,
+        fillColor: AppColors.cardWhite(context),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.border),
+          borderSide: BorderSide(color: AppColors.border(context)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.border),
+          borderSide: BorderSide(color: AppColors.border(context)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
@@ -452,15 +467,15 @@ class _SaveCheckbox extends StatelessWidget {
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(4),
               ),
-              side: const BorderSide(color: AppColors.border, width: 1.5),
+              side: BorderSide(color: AppColors.border(context), width: 1.5),
             ),
           ),
           const SizedBox(width: 10),
-          const Text(
+          Text(
             'Save as default profile',
             style: TextStyle(
               fontSize: 13,
-              color: AppColors.textDark,
+              color: AppColors.textDark(context),
             ),
           ),
         ],
@@ -479,8 +494,8 @@ class _ErrorBanner extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: AppColors.liveRed.withOpacity(0.08),
-        border: Border.all(color: AppColors.liveRed.withOpacity(0.3)),
+        color: AppColors.liveRed.withValues(alpha: 0.08),
+        border: Border.all(color: AppColors.liveRed.withValues(alpha: 0.3)),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
@@ -517,7 +532,7 @@ class _ConnectButton extends StatelessWidget {
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.orange,
           foregroundColor: Colors.white,
-          disabledBackgroundColor: AppColors.orange.withOpacity(0.6),
+          disabledBackgroundColor: AppColors.orange.withValues(alpha: 0.6),
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(14),

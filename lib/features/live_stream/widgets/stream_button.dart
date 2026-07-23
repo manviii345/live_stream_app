@@ -1,34 +1,49 @@
 import 'package:flutter/material.dart';
 import '../../../core/theme/app_theme.dart';
 
-/// Big orange pill button: "Start/Stop Streaming".
 class StreamButton extends StatelessWidget {
-  final bool isLive;
-  final VoidCallback onPressed;
+  final bool isConnected;
+  final bool isStreaming;
+  final VoidCallback onStartStreaming;
+  final VoidCallback onStopStreaming;
 
   const StreamButton({
     super.key,
-    required this.isLive,
-    required this.onPressed,
+    required this.isConnected,
+    required this.isStreaming,
+    required this.onStartStreaming,
+    required this.onStopStreaming,
   });
 
   @override
   Widget build(BuildContext context) {
+    final bool enabled = isConnected || isStreaming;
+    final String label = isStreaming ? 'Stop Streaming' : 'Start Streaming';
+    final Color bgColor = isStreaming
+        ? AppColors.disconnectRed
+        : enabled
+            ? AppColors.orange
+            : AppColors.orange.withValues(alpha: 0.4);
+
     return SizedBox(
       width: double.infinity,
       height: 56,
       child: ElevatedButton(
-        onPressed: onPressed,
+        onPressed: enabled
+            ? (isStreaming ? onStopStreaming : onStartStreaming)
+            : null,
         style: ElevatedButton.styleFrom(
-          backgroundColor: AppColors.orange,
+          backgroundColor: bgColor,
+          disabledBackgroundColor: AppColors.orange.withValues(alpha: 0.4),
           foregroundColor: Colors.white,
+          disabledForegroundColor: Colors.white.withValues(alpha: 0.6),
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(28),
           ),
         ),
         child: Text(
-          isLive ? 'Stop Streaming' : 'Start/Stop Streaming',
+          label,
           style: const TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w600,

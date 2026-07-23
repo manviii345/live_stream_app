@@ -1,14 +1,13 @@
 import 'package:flutter/material.dart';
 import '../../../core/theme/app_theme.dart';
 
-/// One circular icon button + label, used in the bottom control row.
 class _ControlButton extends StatelessWidget {
   final IconData icon;
   final String label;
   final bool isActive;
   final bool isDisabled;
   final Color? activeColor;
-  final Color labelColor;
+  final Color? labelColor;
   final VoidCallback? onTap;
 
   const _ControlButton({
@@ -18,16 +17,17 @@ class _ControlButton extends StatelessWidget {
     this.isActive = false,
     this.isDisabled = false,
     this.activeColor,
-    this.labelColor = AppColors.textGrey,
+    this.labelColor,
   });
 
   @override
   Widget build(BuildContext context) {
+    final effectiveLabelColor = labelColor ?? AppColors.textGrey(context);
     final iconColor = isDisabled
-        ? AppColors.textGrey.withOpacity(0.35)
+        ? AppColors.textGrey(context).withValues(alpha: 0.35)
         : isActive
             ? (activeColor ?? AppColors.orange)
-            : AppColors.textDark;
+            : AppColors.textDark(context);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -40,13 +40,13 @@ class _ControlButton extends StatelessWidget {
             height: 52,
             decoration: BoxDecoration(
               color: isDisabled
-                  ? AppColors.cardWhite.withOpacity(0.5)
-                  : AppColors.cardWhite,
+                  ? AppColors.cardWhite(context).withValues(alpha: 0.5)
+                  : AppColors.cardWhite(context),
               shape: BoxShape.circle,
               border: Border.all(
                 color: isDisabled
-                    ? AppColors.border.withOpacity(0.4)
-                    : AppColors.border,
+                    ? AppColors.border(context).withValues(alpha: 0.4)
+                    : AppColors.border(context),
               ),
             ),
             child: Icon(icon, size: 22, color: iconColor),
@@ -58,8 +58,8 @@ class _ControlButton extends StatelessWidget {
           style: TextStyle(
             fontSize: 12,
             color: isDisabled
-                ? labelColor.withOpacity(0.35)
-                : labelColor,
+                ? effectiveLabelColor.withValues(alpha: 0.35)
+                : effectiveLabelColor,
           ),
         ),
       ],
@@ -67,14 +67,11 @@ class _ControlButton extends StatelessWidget {
   }
 }
 
-/// Bottom row: Mute mic / Mute video / Flip cam / Torch / Disconnect.
 class ControlBar extends StatelessWidget {
+  final bool isStreaming;
   final bool isMicMuted;
   final bool isVideoMuted;
   final bool isTorchOn;
-
-  /// Whether the currently active camera reports a flash unit.
-  /// When false the torch button is rendered in a disabled/greyed state.
   final bool isTorchSupported;
 
   final VoidCallback onMicTap;
@@ -85,6 +82,7 @@ class ControlBar extends StatelessWidget {
 
   const ControlBar({
     super.key,
+    required this.isStreaming,
     required this.isMicMuted,
     required this.isVideoMuted,
     required this.isTorchOn,
@@ -99,48 +97,61 @@ class ControlBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 14),
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
       decoration: BoxDecoration(
-        color: AppColors.cardWhite,
+        color: AppColors.cardWhite(context),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.border),
+        border: Border.all(color: AppColors.border(context)),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          _ControlButton(
-            icon: isMicMuted ? Icons.mic_off : Icons.mic,
-            label: 'Mute mic',
-            isActive: isMicMuted,
-            onTap: onMicTap,
-          ),
-          _ControlButton(
-            icon: isVideoMuted ? Icons.videocam_off : Icons.videocam,
-            label: 'Mute video',
-            isActive: isVideoMuted,
-            onTap: onVideoTap,
-          ),
-          _ControlButton(
-            icon: Icons.cameraswitch,
-            label: 'Flip Cam',
-            onTap: onFlipTap,
-          ),
-          _ControlButton(
-            icon: isTorchOn ? Icons.flashlight_on : Icons.flashlight_off,
-            label: 'Torch',
-            isActive: isTorchOn,
-            isDisabled: !isTorchSupported,
-            onTap: onTorchTap,
-          ),
-          _ControlButton(
-            icon: Icons.cancel,
-            label: 'Disconnect',
-            isActive: true,
-            activeColor: AppColors.disconnectRed,
-            labelColor: AppColors.disconnectRed,
-            onTap: onDisconnectTap,
-          ),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minWidth: constraints.maxWidth),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _ControlButton(
+                    icon: isMicMuted ? Icons.mic_off : Icons.mic,
+                    label: 'Mute mic',
+                    isActive: isMicMuted,
+                    isDisabled: !isStreaming,
+                    onTap: onMicTap,
+                  ),
+                  _ControlButton(
+                    icon: isVideoMuted ? Icons.videocam_off : Icons.videocam,
+                    label: 'Mute video',
+                    isActive: isVideoMuted,
+                    isDisabled: !isStreaming,
+                    onTap: onVideoTap,
+                  ),
+                  _ControlButton(
+                    icon: Icons.cameraswitch,
+                    label: 'Flip Cam',
+                    isDisabled: !isStreaming,
+                    onTap: onFlipTap,
+                  ),
+                  _ControlButton(
+                    icon: isTorchOn ? Icons.flashlight_on : Icons.flashlight_off,
+                    label: 'Torch',
+                    isActive: isTorchOn,
+                    isDisabled: !isStreaming || !isTorchSupported,
+                    onTap: onTorchTap,
+                  ),
+                  _ControlButton(
+                    icon: Icons.cancel,
+                    label: 'Disconnect',
+                    isActive: true,
+                    activeColor: AppColors.disconnectRed,
+                    labelColor: AppColors.disconnectRed,
+                    onTap: onDisconnectTap,
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
